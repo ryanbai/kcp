@@ -621,12 +621,14 @@ void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
 	IUINT32 sn = newseg->sn;
 	int repeat = 0;
 	
+	//不合法的序列号（在滑动窗口之外）
 	if (_itimediff(sn, kcp->rcv_nxt + kcp->rcv_wnd) >= 0 ||
 		_itimediff(sn, kcp->rcv_nxt) < 0) {
 		ikcp_segment_delete(kcp, newseg);
 		return;
 	}
 
+	//按序列号从小到大排序
 	for (p = kcp->rcv_buf.prev; p != &kcp->rcv_buf; p = prev) {
 		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
 		prev = p->prev;
@@ -634,16 +636,21 @@ void ikcp_parse_data(ikcpcb *kcp, IKCPSEG *newseg)
 			repeat = 1;
 			break;
 		}
+		//找到不比我小的节点
 		if (_itimediff(sn, seg->sn) > 0) {
 			break;
 		}
 	}
 
+	//按顺序插入
 	if (repeat == 0) {
 		iqueue_init(&newseg->node);
 		iqueue_add(&newseg->node, p);
 		kcp->nrcv_buf++;
-	}	else {
+	}
+	else
+	{
+	    //重复的包删除之，不做额外处理
 		ikcp_segment_delete(kcp, newseg);
 	}
 
@@ -784,6 +791,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 		size -= len;
 	}
 
+	//TODO 慢启动？？？
 	if (_itimediff(kcp->snd_una, una) > 0) {
 		if (kcp->cwnd < kcp->rmt_wnd) {
 			IUINT32 mss = kcp->mss;
