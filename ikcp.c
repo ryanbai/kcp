@@ -535,6 +535,7 @@ static void ikcp_parse_ack(ikcpcb *kcp, IUINT32 sn)
 	for (p = kcp->snd_buf.next; p != &kcp->snd_buf; p = next) {
 		IKCPSEG *seg = iqueue_entry(p, IKCPSEG, node);
 		next = p->next;
+		// 收到了ack，删除对应序号的包
 		if (sn == seg->sn) {
 			iqueue_del(p);
 			ikcp_segment_delete(kcp, seg);
@@ -542,6 +543,7 @@ static void ikcp_parse_ack(ikcpcb *kcp, IUINT32 sn)
 			break;
 		}
 		else {
+		    //因为snd_buf是顺序的，走到这个分支说明ack了一个后面的sn，当前包可能丢了，故启动快速重传
 			seg->fastack++;
 		}
 	}
@@ -791,14 +793,15 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 		size -= len;
 	}
 
-	//TODO 慢启动？？？
+	//慢启动+拥塞避免
 	if (_itimediff(kcp->snd_una, una) > 0) {
 		if (kcp->cwnd < kcp->rmt_wnd) {
 			IUINT32 mss = kcp->mss;
 			if (kcp->cwnd < kcp->ssthresh) {
 				kcp->cwnd++;
 				kcp->incr += mss;
-			}	else {
+			}
+			else {
 				if (kcp->incr < mss) kcp->incr = mss;
 				kcp->incr += (mss * mss) / kcp->incr + (mss / 16);
 				if ((kcp->cwnd + 1) * mss >= kcp->incr) {
@@ -870,6 +873,9 @@ void ikcp_flush(ikcpcb *kcp)
 	seg.ts = 0;
 
 	// flush acknowledges
+	// 每个收到的包都会发送ack，不过是打包（小于mtu）传输的。
+	// UNA vs ACK+UNA ：ARQ模型响应有两种，UNA（此编号前所有包已收到，如TCP）和ACK（该编号包已收到），
+	// 光用 UNA会导致丢包时全部重传，光用 ACK又会导致 ACK丢失成本太高。KCP有单独ACK，且数据包和ACK包都带UNA信息，有效降低ACK丢失成本。
 	count = kcp->ackcount;
 	for (i = 0; i < count; i++) {
 		size = (int)(ptr - buffer);
@@ -893,6 +899,7 @@ void ikcp_flush(ikcpcb *kcp)
 			if (_itimediff(kcp->current, kcp->ts_probe) >= 0) {
 				if (kcp->probe_wait < IKCP_PROBE_INIT) 
 					kcp->probe_wait = IKCP_PROBE_INIT;
+				//增加探测间隔
 				kcp->probe_wait += kcp->probe_wait / 2;
 				if (kcp->probe_wait > IKCP_PROBE_LIMIT)
 					kcp->probe_wait = IKCP_PROBE_LIMIT;
@@ -958,7 +965,7 @@ void ikcp_flush(ikcpcb *kcp)
 	}
 
 	// calculate resent
-	resent = (kcp->fastresend > 0)? (IUINT32)kcp->fastresend : 0xffffffff;
+	resent = (kcp->fastresend > 0)? (IUINT32)kcp->fastresend : 0xffffffff; //无符号数
 	rtomin = (kcp->nodelay == 0)? (kcp->rx_rto >> 3) : 0;
 
 	// flush data segments
@@ -975,6 +982,7 @@ void ikcp_flush(ikcpcb *kcp)
 			needsend = 1;
 			segment->xmit++;
 			kcp->xmit++;
+			//TCP超时计算是RTOx2，这样连续丢三次包就变成RTOx8了，十分恐怖，而KCP启动快速模式后不x2，只是x1.5（实验证明1.5这个值相对比较好），提高了传输速度。
 			if (kcp->nodelay == 0) {
 				segment->rto += kcp->rx_rto;
 			}	else {
@@ -983,6 +991,9 @@ void ikcp_flush(ikcpcb *kcp)
 			segment->resendts = current + segment->rto;
 			lost = 1;
 		}
+		//丢包，快速重传，但与文档描述不符（即收到ack3时即快速重传）
+		//发送端发送了1,2,3,4,5几个包，然后收到远端的ACK: 1, 3, 4, 5，当收到ACK3时，KCP知道2被跳过1次，收到ACK4时，知道2被跳过了2次，
+		//此时可以认为2号丢失，不用等超时，直接重传2号包，大大改善了丢包时的传输速度。
 		else if (segment->fastack >= resent) {
 			needsend = 1;
 			segment->xmit++;
@@ -1024,7 +1035,7 @@ void ikcp_flush(ikcpcb *kcp)
 		ikcp_output(kcp, buffer, size);
 	}
 
-	// update ssthresh
+	// update ssthresh，进入拥塞避免
 	if (change) {
 		IUINT32 inflight = kcp->snd_nxt - kcp->snd_una;
 		kcp->ssthresh = inflight / 2;
@@ -1034,6 +1045,7 @@ void ikcp_flush(ikcpcb *kcp)
 		kcp->incr = kcp->cwnd * kcp->mss;
 	}
 
+	// 丢包：ssthresh为cwnd一半，cwnd置为1，进入慢启动
 	if (lost) {
 		kcp->ssthresh = cwnd / 2;
 		if (kcp->ssthresh < IKCP_THRESH_MIN)
@@ -1060,6 +1072,7 @@ void ikcp_update(ikcpcb *kcp, IUINT32 current)
 
 	kcp->current = current;
 
+	//updated被设置为1后不再变化
 	if (kcp->updated == 0) {
 		kcp->updated = 1;
 		kcp->ts_flush = kcp->current;
@@ -1114,6 +1127,8 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 
 	tm_flush = _itimediff(ts_flush, current);
 
+	// 遍历每个包的resendts，找到最近超时的
+	// 但其实没办法保证fastresend
 	for (p = kcp->snd_buf.next; p != &kcp->snd_buf; p = p->next) {
 		const IKCPSEG *seg = iqueue_entry(p, const IKCPSEG, node);
 		IINT32 diff = _itimediff(seg->resendts, current);

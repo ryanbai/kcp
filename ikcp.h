@@ -256,18 +256,18 @@ typedef struct IQUEUEHEAD iqueue_head;
 struct IKCPSEG
 {
 	struct IQUEUEHEAD node;
-	IUINT32 conv;
+	IUINT32 conv; //唯一标识
 	IUINT32 cmd;
 	IUINT32 frg;
-	IUINT32 wnd;
-	IUINT32 ts;
-	IUINT32 sn;
-	IUINT32 una;
-	IUINT32 len;
-	IUINT32 resendts;
-	IUINT32 rto;
+	IUINT32 wnd; //我方窗口大小
+	IUINT32 ts; //我方当前时间戳
+	IUINT32 sn; //ack包：对端的sn；数据包：我方的序列号
+	IUINT32 una; //连续acked的序号+1(窗口左侧)
+	IUINT32 len; //包长
+	IUINT32 resendts; //resend的时间戳
+	IUINT32 rto; //
 	IUINT32 fastack;
-	IUINT32 xmit;
+	IUINT32 xmit; //被发送的次数
 	char data[1];
 };
 
@@ -277,28 +277,28 @@ struct IKCPSEG
 //---------------------------------------------------------------------
 struct IKCPCB
 {
-	IUINT32 conv, mtu, mss, state;
+	IUINT32 conv, mtu, mss, state; //conv:唯一标识;
 	IUINT32 snd_una, snd_nxt, rcv_nxt; //snd_una：已收到对方ack的我方发送数据的序列号+1；snd_nxt：我方已发送数据序列号+1；recv_nxt：接收窗口的左侧游标
 	IUINT32 ts_recent, ts_lastack, ssthresh;
 	IINT32 rx_rttval, rx_srtt, rx_rto, rx_minrto;
-	IUINT32 snd_wnd, rcv_wnd, rmt_wnd, cwnd, probe; //snd_wnd:我方发送窗口大小; rcv_wnd:我方接收窗口长度;rmt_wnd:对方接收窗口大小;cwnd：拥塞控制窗口大小(实际发送窗口应当是snd_wnd、rmt_wnd和cwnd的最小值)
-	IUINT32 current, interval, ts_flush, xmit;
-	IUINT32 nrcv_buf, nsnd_buf; //nrcv_buf:接收buff中包的数量;
-	IUINT32 nrcv_que, nsnd_que; //nrcv_que:接收queue中包的数量;
-	IUINT32 nodelay, updated;
-	IUINT32 ts_probe, probe_wait;
+	IUINT32 snd_wnd, rcv_wnd, rmt_wnd, cwnd, probe; //snd_wnd:我方发送窗口大小; rcv_wnd:我方接收窗口长度;rmt_wnd:对方接收窗口大小;cwnd：拥塞控制窗口大小(实际发送窗口应当是snd_wnd、rmt_wnd和cwnd的最小值);probe:探测相关的标志
+	IUINT32 current, interval, ts_flush, xmit; //current:当前时间，调用update时外界出入; interval:update的时间间隔;ts_flush:flush数据的时间;xmit:重发
+	IUINT32 nrcv_buf, nsnd_buf; //nrcv_buf:接收buff中包的数量;nsnd_buf:发送缓冲区中包的数量
+	IUINT32 nrcv_que, nsnd_que; //nrcv_que:接收queue中包的数量;nsnd_que:发送队列中包的数量
+	IUINT32 nodelay, updated; //updated:是否调用过ikcp_update的标识
+	IUINT32 ts_probe, probe_wait; //ts_probe:下次窗口探测时间; probe_wait:下次窗口探测时间间隔
 	IUINT32 dead_link, incr;
-	struct IQUEUEHEAD snd_queue;
+	struct IQUEUEHEAD snd_queue; // 发送队列，ikcp_flush会将队列中的数据放到snd_buf中
 	struct IQUEUEHEAD rcv_queue; //接收队列：已确认收到的数据（即没有丢包的连续数据）
-	struct IQUEUEHEAD snd_buf; //发送缓冲区
+	struct IQUEUEHEAD snd_buf; //发送缓冲区:
 	struct IQUEUEHEAD rcv_buf; //接收缓冲区:接收的数据放在这里，当没有丢包时数据会被放到接收队列中。
 	IUINT32 *acklist; //收到数据后但未ack，二元组序列：[收到的序列号|收数据的时间戳]
 	IUINT32 ackcount; //acklist中二元组的数量
 	IUINT32 ackblock;
 	void *user;
-	char *buffer;
-	int fastresend;
-	int nocwnd;
+	char *buffer; //output用的缓冲区，等同临时缓冲
+	int fastresend; //快速重传
+	int nocwnd; //拥塞控制？
 	int logmask;
 	int (*output)(const char *buf, int len, struct IKCPCB *kcp, void *user);
 	void (*writelog)(const char *log, struct IKCPCB *kcp, void *user);
